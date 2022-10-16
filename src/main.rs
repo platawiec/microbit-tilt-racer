@@ -232,7 +232,7 @@ mod app {
                 let rand_num = rand_num.to_ne_bytes();
                 let rand_num = rand_num.map(|byte| (byte / (u8::MAX / 10)).clamp(0, 9));
                 for j in 0usize..5usize {
-                    let d = ((j as i32 - position)).abs() + (4 - i as i32).abs();
+                    let d = (j as i32 - position).abs() + (4 - i as i32).abs();
                     if d < radius {
                         game.collision_animation[i][j] = rand_num[j];
                     } else if d == radius {
@@ -332,7 +332,8 @@ mod app {
                     // reset the game
                     game.player = Player::new();
                     game.obstacle = Obstacle::new(2);
-                    game.state = GameState::StartMenu
+                    game.state = GameState::StartMenu;
+                    game.score = 0;
                 }
                 _ => (),
             }
