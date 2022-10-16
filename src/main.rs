@@ -15,6 +15,7 @@ mod app {
         hal::{
             clocks::Clocks,
             rtc::{Rtc, RtcInterrupt},
+            gpiote::Gpiote,
             twim, Timer,
             rng,
         },
@@ -39,12 +40,20 @@ mod app {
 
     use lsm303agr::{interface::I2cInterface, mode, AccelMode, AccelOutputDataRate, Lsm303agr};
 
+    enum GameState {
+        StartMenu,
+        Play,
+        Collision,
+        ScoreMenu,
+    }
+
     pub struct Game {
         player: Player,
         obstacle: Obstacle,
         track_speed: u8,
         score: u32,
-        rng: rand_pcg::Lcg64Xsh32
+        rng: rand_pcg::Lcg64Xsh32,
+        state: GameState,
     }
 
     struct Obstacle {
@@ -61,13 +70,14 @@ mod app {
     #[shared]
     struct Shared {
         display: Display<pac::TIMER1>,
+        gpiote: Gpiote,
+        game: Game,
     }
 
     #[local]
     struct Local {
         game_clock: Rtc<pac::RTC0>,
         sensor: Lsm303agr<I2cInterface<twim::Twim<TWIM0>>, mode::MagOneShot>,
-        game: Game,
     }
 
     const TRACK_MIN: i32 = -2000;
@@ -114,6 +124,14 @@ mod app {
         rtc0.enable_interrupt(RtcInterrupt::Tick, None);
         rtc0.enable_counter();
 
+        let mut gpiote = Gpiote::new(board.GPIOTE);
+        let channel0 = gpiote.channel0();
+        channel0
+            .input_pin(&board.buttons.button_a.degrade())
+            .hi_to_lo()
+            .enable_interrupt();
+        channel0.reset_events();
+
         let mut timer = Timer::new(board.TIMER0);
 
         let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
@@ -150,44 +168,86 @@ mod app {
             track_speed: 1,
             score: 0,
             rng,
+            state: GameState::StartMenu,
         };
         (
-            Shared { display },
+            Shared {
+                display,
+                gpiote,
+                game,
+            },
             Local {
                 game_clock: rtc0,
                 sensor,
-                game
             },
             init::Monotonics(),
         )
     }
 
-    #[task(binds = TIMER1, priority = 2, shared = [display])]
+    #[task(binds = TIMER1, priority = 3, shared = [display])]
     fn timer1(mut cx: timer1::Context) {
         cx.shared
             .display
             .lock(|display| display.handle_display_event());
     }
 
-    #[task(binds = RTC0, priority = 1, shared = [display], local = [game_clock, sensor, game])]
+    #[task(binds = GPIOTE, priority = 2, shared = [gpiote, game])]
+    fn gpiote(mut cx: gpiote::Context) {
+        let mut shared = cx.shared;
+
+        let button_a_pressed = shared.gpiote.lock(|gpiote| {
+            let a_pressed = gpiote.channel0().is_event_triggered();
+            gpiote.channel0().reset_events();
+            a_pressed
+        });
+
+        shared.game.lock(|game| {
+            let current_state = &game.state;
+            match (current_state, button_a_pressed) {
+                (GameState::StartMenu, true) => game.state = GameState::Play,
+                (GameState::ScoreMenu, true) => game.state = GameState::StartMenu,
+                _ => (),
+            }
+        });
+    }
+
+    #[task(binds = RTC0, priority = 1, shared = [display, game], local = [game_clock, sensor])]
     fn rtc0(cx: rtc0::Context) {
         let mut shared = cx.shared;
         let local = cx.local;
-        let mut player = &mut local.game.player;
-        let mut obstacle = &mut local.game.obstacle;
 
         local.game_clock.reset_event(RtcInterrupt::Tick);
+
+        let image = shared.game.lock(|game| {
+            let game = match game.state {
+                GameState::StartMenu => game,
+                GameState::Play => play(game, local.sensor),
+                GameState::Collision => game,
+                GameState::ScoreMenu => game,
+            };
+            render_state(game)
+        });
+
+        shared.display.lock(|display| {
+            display.show(&image);
+        });
+
+    }
+
+    fn play<'a>(game: &'a mut Game, sensor: &mut Lsm303agr<I2cInterface<twim::Twim<TWIM0>>, mode::MagOneShot>) -> &'a mut Game {
+        let mut player = &mut game.player;
+        let mut obstacle = &mut game.obstacle;
 
         // check collisions
 
         // "spawn" new obstacle
         if obstacle.position_y > TRACK_MAX {
-            let position_x = local.game.rng.next_u32() / (u32::MAX / 5);
+            let position_x = game.rng.next_u32() / (u32::MAX / 5);
             obstacle.board_position_x = position_x.clamp(0, 4) as usize;
             obstacle.position_y = TRACK_MIN;
         }
         
-        let data = local.sensor.accel_data().unwrap();
+        let data = sensor.accel_data().unwrap();
 
         // 1 game tick = 1/60 sec
         player.acceleration = data.x / 60;
@@ -201,17 +261,15 @@ mod app {
         player.position += player.velocity;
         player.position = player.position.clamp(TRACK_MIN, TRACK_MAX);
 
-        obstacle.position_y += (BASE_VELOCITY as i32) * (local.game.track_speed as i32);
-        
-        shared.display.lock(|display| {
-            display.show(&render_state(&local.game));
-        });
+        obstacle.position_y += (BASE_VELOCITY as i32) * (game.track_speed as i32);
 
-        local.game.score += 1;
+        game.score += 1;
 
         // Speed up every minute
-        if local.game.score % 3600 == 0 {
-            local.game.track_speed += 1;
-        }
+        if game.score % 3600 == 0 {
+            game.track_speed += 1;
+        };
+
+        game
     }
 }
