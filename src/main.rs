@@ -30,15 +30,15 @@ mod app {
     use lsm303agr::{interface::I2cInterface, mode, AccelMode, AccelOutputDataRate, Lsm303agr};
 
     pub struct Game {
-        pub player: Player,
-        pub track_speed: u8,
-        pub score: u32,
+        player: Player,
+        track_speed: u8,
+        score: u32,
     }
 
-    pub struct Player {
-        pub position: i32,
-        pub velocity: i32,
-        pub acceleration: i32,
+    struct Player {
+        position: i32,
+        velocity: i32,
+        acceleration: i32,
     }
 
     #[shared]
@@ -53,8 +53,9 @@ mod app {
         game: Game,
     }
 
-    const TRACK_MIN: i32 = -1000;
-    const TRACK_MAX: i32 = 1000;
+    const TRACK_MIN: i32 = -2000;
+    const TRACK_MAX: i32 = 2000;
+    const TRACK_MARGIN: i32 = 500; // track area for "gutters"
 
     fn render_state(player: &Player) -> GreyscaleImage {
         // returns a GrayscaleImage from the game state
@@ -66,10 +67,16 @@ mod app {
             [0, 0, 0, 0, 0],
         ];
 
-        let track_delta = (TRACK_MAX - TRACK_MIN) / 5;
-        let board_position = ((player.position - TRACK_MIN) / track_delta).clamp(0, 4) as usize;
-        data[4][board_position] = 9;
+        let board_position = player_board_position(player);
+
+        data[4][board_position as usize] = 9;
         GreyscaleImage::new(&data)
+    }
+
+    fn player_board_position(player: &Player) -> u8 {
+        let track_delta = (TRACK_MAX - TRACK_MIN + 2 * TRACK_MARGIN) / 5;
+        let pos = player.position - TRACK_MIN + TRACK_MARGIN;
+        (pos / track_delta).clamp(0, 4) as u8
     }
 
     #[init]
@@ -139,8 +146,8 @@ mod app {
 
         let data = local.sensor.accel_data().unwrap();
 
-        // 1 game tick = 1/60 sec, and we make it a bit easier
-        player.acceleration = data.x / 120;
+        // 1 game tick = 1/60 sec
+        player.acceleration = data.x / 60;
         player.velocity += player.acceleration;
         if player.position == TRACK_MIN && player.velocity < 0 {
             player.velocity = 0;
@@ -154,5 +161,7 @@ mod app {
         shared.display.lock(|display| {
             display.show(&render_state(&player));
         });
+
+        local.game.score += 1;
     }
 }
