@@ -29,6 +29,12 @@ mod app {
 
     use lsm303agr::{interface::I2cInterface, mode, AccelMode, AccelOutputDataRate, Lsm303agr};
 
+    pub struct Game {
+        pub player: Player,
+        pub track_speed: u8,
+        pub score: u32,
+    }
+
     pub struct Player {
         pub position: i32,
         pub velocity: i32,
@@ -44,7 +50,7 @@ mod app {
     struct Local {
         game_clock: Rtc<pac::RTC0>,
         sensor: Lsm303agr<I2cInterface<twim::Twim<TWIM0>>, mode::MagOneShot>,
-        player: Player,
+        game: Game,
     }
 
     const TRACK_MIN: i32 = -1000;
@@ -100,12 +106,17 @@ mod app {
             velocity: 0,
             acceleration: 0,
         };
+        let mut game = Game {
+            player,
+            track_speed: 1,
+            score: 0,
+        };
         (
             Shared { display },
             Local {
                 game_clock: rtc0,
                 sensor,
-                player
+                game
             },
             init::Monotonics(),
         )
@@ -118,18 +129,18 @@ mod app {
             .lock(|display| display.handle_display_event());
     }
 
-    #[task(binds = RTC0, priority = 1, shared = [display], local = [game_clock, sensor, player])]
+    #[task(binds = RTC0, priority = 1, shared = [display], local = [game_clock, sensor, game])]
     fn rtc0(cx: rtc0::Context) {
         let mut shared = cx.shared;
         let local = cx.local;
-        let player = local.player;
+        let mut player = &mut local.game.player;
 
         local.game_clock.reset_event(RtcInterrupt::Tick);
 
         let data = local.sensor.accel_data().unwrap();
 
-        // 1 game tick = 1/60 sec
-        player.acceleration = data.x / 60;
+        // 1 game tick = 1/60 sec, and we make it a bit easier
+        player.acceleration = data.x / 120;
         player.velocity += player.acceleration;
         if player.position == TRACK_MIN && player.velocity < 0 {
             player.velocity = 0;
