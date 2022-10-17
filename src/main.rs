@@ -17,7 +17,7 @@ mod app {
             gpiote::Gpiote,
             rng,
             rtc::{Rtc, RtcInterrupt},
-            twim, Timer,
+            twim,
         },
         pac::{
             self,
@@ -29,13 +29,8 @@ mod app {
         },
     };
 
-    use core::cell::RefCell;
-    use cortex_m::interrupt::Mutex;
-
     use rand::{RngCore, SeedableRng};
     use rand_pcg::Pcg32;
-
-    static RNG: Mutex<RefCell<Option<Pcg32>>> = Mutex::new(RefCell::new(None));
 
     use lsm303agr::{interface::I2cInterface, mode, AccelMode, AccelOutputDataRate, Lsm303agr};
 
@@ -115,7 +110,7 @@ mod app {
     const TRACK_MIN: i32 = -2000;
     const TRACK_MAX: i32 = 2000;
     const TRACK_MARGIN: i32 = 500; // track area for "gutters"
-    const BASE_VELOCITY: u8 = 100;
+    const BASE_VELOCITY: u8 = 50;
 
     fn render_state(game: &Game) -> GreyscaleImage {
         // returns a GrayscaleImage from the game state
@@ -222,7 +217,7 @@ mod app {
     }
 
     fn animate_collision<'a>(game: &'a mut Game) -> &'a mut Game {
-        let mut rng = &mut game.rng;
+        let rng = &mut game.rng;
         let radius: i32 = (game.anim_timer / 10) as i32;
         let position: i32 = get_board_position(game.player.position) as i32;
         // update rate: 30 fps
@@ -261,15 +256,13 @@ mod app {
         rtc0.enable_interrupt(RtcInterrupt::Tick, None);
         rtc0.enable_counter();
 
-        let mut gpiote = Gpiote::new(board.GPIOTE);
+        let gpiote = Gpiote::new(board.GPIOTE);
         let channel0 = gpiote.channel0();
         channel0
             .input_pin(&board.buttons.button_a.degrade())
             .hi_to_lo()
             .enable_interrupt();
         channel0.reset_events();
-
-        let mut timer = Timer::new(board.TIMER0);
 
         let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
 
@@ -286,13 +279,14 @@ mod app {
         /* Use hardware RNG to initialise PRNG */
         let mut rng = rng::Rng::new(board.RNG);
         let mut seed: [u8; 16] = [0; 16];
+        rng.random(&mut seed);
         let rng = Pcg32::from_seed(seed);
 
         let display = Display::new(board.TIMER1, board.display_pins);
 
-        let mut player = Player::new();
-        let mut obstacle = Obstacle::new(2);
-        let mut game = Game::new(player, obstacle, rng);
+        let player = Player::new();
+        let obstacle = Obstacle::new(2);
+        let game = Game::new(player, obstacle, rng);
         (
             Shared {
                 display,
@@ -315,7 +309,7 @@ mod app {
     }
 
     #[task(binds = GPIOTE, priority = 2, shared = [gpiote, game])]
-    fn gpiote(mut cx: gpiote::Context) {
+    fn gpiote(cx: gpiote::Context) {
         let mut shared = cx.shared;
 
         let button_a_pressed = shared.gpiote.lock(|gpiote| {
